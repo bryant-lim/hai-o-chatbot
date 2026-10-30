@@ -1143,13 +1143,16 @@
     let configId = '128';
     let configName = 'Live Chat';
 
-    let visitorId = sessionStorage.getItem('hai_o_visitor_id');
+    let visitorId = sessionStorage.getItem('NXLiveChatCustomerId');
     if (!visitorId) {
-      visitorId = 'visitor_' + Date.now() + '_' + Math.floor(Math.random() * 100000);
-      sessionStorage.setItem('hai_o_visitor_id', visitorId);
+      const timestamp = new Date().getTime();
+      const randomNum = Math.floor(Math.random() * 1000000);
+      visitorId = `${timestamp}${randomNum}`;
+      sessionStorage.setItem('NXLiveChatCustomerId', visitorId);
     }
     let visitorName = 'Anonymous' + visitorId.slice(-6);
     let isChatOpen = false;
+    let pendingMessages = [];
 
     function initChatSocket() {
       if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
@@ -1188,14 +1191,16 @@
               primary_contact: visitorId,
               from_id: visitorId,
               from_name: visitorName,
-              attributes: ['Language.en_US'],
+              attributes: ['Language.en-US'],
               context: {
                 service_account: configId,
                 service_account_name: configName,
                 customer_info: {
                   id: visitorId,
                   name: visitorName,
-                  enable_anonymous: true,
+                  first_name: '',
+                  last_name: '',
+                  enable_anonymous: 1,
                   config_id: configId
                 }
               }
@@ -1203,10 +1208,14 @@
             ws.send(JSON.stringify(contactReq));
           }
 
-          // 2. Member join event
+          // 2. Member join event -> capture conversation_id & flush queue
           if (res.message_type === 'event' && res.method === 'member-join') {
             if (res.conversation_id) {
               conversationId = res.conversation_id;
+              if (pendingMessages.length > 0) {
+                pendingMessages.forEach(msgText => sendPayload(msgText));
+                pendingMessages = [];
+              }
             }
           }
 
@@ -1220,7 +1229,7 @@
               addSystemNotice(visitorName + ' Joined Conversation');
               addSystemNotice('Hai-O Joined Conversation');
               list.forEach(item => {
-                const text = item.message?.content || item.content || '';
+                const text = item.message?.text || item.message?.content || item.text || item.content || '';
                 if (!text) return;
                 if (item.role === 'visitor') {
                   addUserMessage(text, item.create_time);
@@ -1233,10 +1242,12 @@
 
           // 4. Live message received from bot/agent
           if (res.method === 'send') {
-            removeTypingIndicator();
-            const content = res.message?.content || (typeof res.message === 'string' ? res.message : '');
-            if (content) {
-              addBotMessage(content, res.from_name || 'Hai-O');
+            if (res.role !== 'visitor') {
+              removeTypingIndicator();
+              const text = res.message?.text || res.message?.content || (typeof res.message === 'string' ? res.message : '');
+              if (text) {
+                addBotMessage(text, res.from_name || 'Hai-O');
+              }
             }
           }
         } catch (err) {
@@ -1368,6 +1379,28 @@
       }
     }
 
+    function sendPayload(text) {
+      const payload = {
+        message_type: 'text',
+        method: 'send',
+        channel: 'webchat',
+        conversation_id: conversationId,
+        tenant_id: tenantId,
+        visibility: 'public',
+        role: 'visitor',
+        primary_contact: visitorId,
+        from_id: visitorId,
+        from_name: visitorName,
+        message: {
+          text: text
+        },
+        context: {
+          service_account: configId
+        }
+      };
+      ws.send(JSON.stringify(payload));
+    }
+
     function sendUserMessage() {
       const input = document.getElementById('chat-input');
       const text = input.value.trim();
@@ -1377,35 +1410,18 @@
       addUserMessage(text);
       showTypingIndicator();
 
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        const payload = {
-          message_type: 'text',
-          method: 'send',
-          channel: 'webchat',
-          conversation_id: conversationId,
-          tenant_id: tenantId,
-          visibility: 'public',
-          role: 'visitor',
-          primary_contact: visitorId,
-          from_id: visitorId,
-          from_name: visitorName,
-          message: {
-            content: text
-          }
-        };
-        ws.send(JSON.stringify(payload));
+      if (ws && ws.readyState === WebSocket.OPEN && conversationId) {
+        sendPayload(text);
       } else {
-        console.warn('Socket not open, reconnecting...');
+        pendingMessages.push(text);
         initChatSocket();
       }
     }
 
-    // Pre-populate initial chat state matching Hai-O demo
+    // Initialize chat session on load
     window.addEventListener('DOMContentLoaded', () => {
       addTimeNotice();
       addSystemNotice(visitorName + ' Joined Conversation');
-      addSystemNotice('Hai-O Joined Conversation');
-      addBotMessage("Hey! I'm Hai-O 👋 How can I help you today?", 'Hai-O');
       initChatSocket();
     });
   </script>
